@@ -647,6 +647,13 @@ Finding, keying and translating shaders (`dm/gfx/tools/shader_split.py`, `dmsh_b
 - **Check:** check first that the handles come only from c2's tables: in Octopath Traveler 0 every integer read of c2 in those shaders is a table slot (texture slots 0-10, samplers 0-4).
 - **Found on:** [Octopath Traveler 0](../../dm/games/01005270232F2000/README.md): 61 Unreal vertex shaders, particles reading their data from buffer textures (separate textures and samplers). [Paper Mario: The Thousand-Year Door](../../dm/games/0100ECD018EBE000/README.md): 2,386 pixel shaders (5,476 cube samples, 487 2D), slots 0, 7, 8, 13 and 28 (combined table).
 
+### Texture handles from the game's own data
+
+- **Symptom:** characters and props missing (Mario Party Superstars: the NPCs and parts of the boards), with `[RED] shader … reflection conversion failed: a texture handle the translator could not trace to one slot (profile key tex_dyn_slots off)` and `failed to load` for their pixel shaders.
+- **Cause:** the materials' clustered lights keep each light's shadow map and projected texture as a combined handle (texture ID | sampler ID << 20) in a storage buffer (`fp_s1`), which the translator cannot trace to a slot; it gives the shader Ryujinx's fallback arrays (`fp_t2d`, `fp_t2ds`, `fp_tcube`, `fp_tcubes`, `fp_s` `_cb0_40000000`, 32 entries each) indexed by the IDs capped at 31. A game's texture and sampler IDs start at 256 (0-255 are the driver's), so every lookup lands on element 31: no element can hold the texture asked for, and `tex_dyn_slots on` (slot indices in c2) does not apply either.
+- **Fix:** a workaround, the profile value `tex_dyn_slots neutral`: such shaders load, every element of their arrays is a white texture of the declared kind read through a sampler whose comparison always passes (`white_tex`, `neutral_samp` in `nvn_mtl.m`), and c2 keeps the handles. A shadow lookup gives 1 and a projected-texture lookup leaves the light's colour as it is, what the shader computes for a light without them; the lights' shadows and projected textures are missing. The proper fix, the texture pool as an array the shader indexes by the full ID, needs a translator change. `NVN_REFL_MAXARG` is 256 for these shaders' up to 247 argument buffer entries.
+- **Found on:** [Mario Party Superstars](../../dm/games/01006FE013472000/README.md): 6,370 of its 82,790 shaders (6,364 with the handles from storage buffers, 16 from uniform buffers), among them the NPC materials (`npc003_nokonoko`, `npc022_kinopio`, `npc051_kameck`, `npc002_heyho`) and parts of the boards (`hsmn_bg`). With the key every one of them loads (checked offline against the host's load rules), and a board and a minigame play with the characters drawn.
+
 ### A texture chosen at run time between two uniform-buffer handles
 
 - **Symptom:** Ryujinx's fallback arrays (`fp_t2d_cb0_40000000`) in pixel shaders whose handle comes from the game's own uniform buffers; the shaders do not load and their draws are skipped.
@@ -687,7 +694,7 @@ Finding, keying and translating shaders (`dm/gfx/tools/shader_split.py`, `dmsh_b
 
 - **Symptom:** `[RED] shader … reflection conversion failed: 66 bindings, over the limit 64`, then `failed to load`, and the draws with it are dropped (a black map).
 - **Cause:** the reflection is converted into fixed arrays of `NVN_REFL_MAXB` bindings (`nvn_refl.h`), which was 64. NVN gives a stage 32 textures and 32 samplers beside its uniform and storage buffers and images, so a shader can have more.
-- **Fix:** `NVN_REFL_MAXB` is 96; the argument buffer entries keep their own limit (`NVN_REFL_MAXARG`, 192).
+- **Fix:** `NVN_REFL_MAXB` is 128 (it was 96, and Mario Party Superstars' Bezel PBR pixel shaders have 106); the argument buffer entries keep their own limit (`NVN_REFL_MAXARG`, 256, raised from 192 for its clustered-light materials: [Texture handles from the game's own data](#texture-handles-from-the-games-own-data)).
 - **Found on:** [OCTOPATH TRAVELER II](../../dm/games/0100A3501946E000/README.md): the 3D world map of the traveler selection (`UiMM_WorldMap3D`, pixel shader `f7c8373b7323687d`: 30 textures, 30 samplers, 3 uniform buffers and the c1 / support / driver segments).
 
 ### Image atomics

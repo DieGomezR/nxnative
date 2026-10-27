@@ -3599,7 +3599,7 @@ static NvShader *shader_load(NSString *pc, int stage, int layer) {
     if (stage == 0 && [j[@"layer_from"] isKindOfClass:[NSDictionary class]]) { o->lay_loc = [j[@"layer_from"][@"loc"] intValue]; o->lay_comp = [[j[@"layer_from"][@"comp"] description] UTF8String][0]; }
     char err[160];
     if (nvn_refl_from_json(j, &o->rf, err, sizeof err)) { MLOG("[RED] shader %s reflection conversion failed: %s", pc.UTF8String, err); return nil; }
-    if (o->rf.dyn && !DM_GAME_TEX_DYN_SLOTS) {   // dynamic texture handles (TEXD / SAMPD) only where the profile says the game picks them from c2's tables, as before otherwise
+    if (o->rf.dyn && !DM_GAME_TEX_DYN_SLOTS && !DM_GAME_TEX_DYN_NEUTRAL) {   // dynamic texture handles (TEXD / SAMPD) only where the profile says the game picks them from c2's tables, as before otherwise
         // (rf.c1 is freed by dealloc when o goes: freeing it here too was a double free, which aborted FINAL FANTASY RESONANCE at its first such shader)
         MLOG("[RED] shader %s reflection conversion failed: a texture handle the translator could not trace to one slot (profile key tex_dyn_slots off)", pc.UTF8String); return nil; }
     if (rt_range_on()) o->range_ro=rt_range_bindings_ro(j);
@@ -6021,6 +6021,29 @@ static id<MTLSamplerState> dummy_samp(void) {
     return s;
 }
 static uint64_t dummy_samp_rid(void) { static uint64_t rid; if (!rid) rid = dummy_samp().gpuResourceID._impl; return rid; }
+// Profile key tex_dyn_slots neutral (Mario Party Superstars): a shader whose texture handle comes from the game's own data (its clustered lights keep texture ID | sampler ID << 20
+// in a storage buffer) indexes Ryujinx's 32-entry fallback arrays with the IDs capped at 31, and a game's IDs start at 256 (0-255 are the driver's), so no element can hold the texture
+// asked for. Every element is the neutral one instead: white, read through a sampler whose comparison always passes, so a shadow lookup gives 1 (lit) and a projected-texture
+// lookup leaves the light's colour as it is, what the shader computes for a light without a shadow or a projected texture. Without the key such shaders do not load at all
+static uint64_t g_white_tex_rid[8];
+static id<MTLTexture> white_tex(int dtt) {
+    static __strong id<MTLTexture> cache[8];
+    id<MTLTexture> t = cache[dtt & 7]; if (t) return t;
+    MTLTextureDescriptor *d = [MTLTextureDescriptor new];
+    d.textureType = (MTLTextureType)dtt; d.pixelFormat = MTLPixelFormatRGBA8Unorm; d.width = d.height = d.depth = 1; d.storageMode = MTLStorageModeShared; d.usage = MTLTextureUsageShaderRead;
+    t = [g_dev newTextureWithDescriptor:d];
+    uint8_t w[4] = {255, 255, 255, 255}; NSUInteger faces = (MTLTextureType)dtt == MTLTextureTypeCube || (MTLTextureType)dtt == MTLTextureTypeCubeArray ? 6 : 1;
+    for (NSUInteger f = 0; f < faces; f++) [t replaceRegion:MTLRegionMake3D(0, 0, 0, 1, 1, 1) mipmapLevel:0 slice:f withBytes:w bytesPerRow:4 bytesPerImage:4];
+    cache[dtt & 7] = t; g_white_tex_rid[dtt & 7] = t.gpuResourceID._impl; res_add(t);
+    return t;
+}
+static id<MTLSamplerState> neutral_samp(void) {
+    static id<MTLSamplerState> s;
+    if (!s) { MTLSamplerDescriptor *d = [MTLSamplerDescriptor new]; d.supportArgumentBuffers = YES; d.minFilter = d.magFilter = MTLSamplerMinMagFilterLinear;
+        d.compareFunction = MTLCompareFunctionAlways; s = [g_dev newSamplerStateWithDescriptor:d]; }
+    return s;
+}
+static uint64_t neutral_samp_rid(void) { static uint64_t rid; if (!rid) rid = neutral_samp().gpuResourceID._impl; return rid; }
 static id<MTLBuffer> dummy_buf(void) { static id<MTLBuffer> b; if (!b) { b = [g_dev newBufferWithLength:64 << 10 options:MTLResourceStorageModeShared]; res_add(b); } return b; }
 static uint64_t dummy_buf_gpu(void) { static uint64_t gpu; if (!gpu) gpu = dummy_buf().gpuAddress; return gpu; }
 // The texture of an image slot (a view of the shader's class when the texture's differs, img_fit), else the write sink. Caller holds g_rmu
@@ -6272,6 +6295,17 @@ static int encode_args_(id<MTLCommandEncoder> en, NvShader *sh, int nvn_stage, i
             else t = tbuf_shadow(t, &trid);   // see tbuf_shadow
             slots[aid] = trid;
             USE(t, MTLResourceUsageRead);
+        } else if (b->kind == NVN_RB_TEXD && DM_GAME_TEX_DYN_NEUTRAL) {   // dynamic handle array, tex_dyn_slots neutral: every element the neutral texture of the declared kind (white_tex)
+            __unsafe_unretained id<MTLTexture> t; uint64_t trid;
+            if (b->dtt == (uint8_t)MTLTextureTypeTextureBuffer) { t = dummy_tbuf(b->dpf); trid = g_dummy_tbuf_rid[b->dpf & 3]; }
+            else { t = white_tex(b->dtt); trid = g_white_tex_rid[b->dtt & 7]; }
+            for (int k = 0; k < b->n; k++) slots[aid + k] = trid;
+            USE(t, MTLResourceUsageRead);
+            if (!(sh->logged & 1)) { sh->logged |= 1; static int nlog; if (nlog++ < 8) MLOG("shader %s (stage %d): dynamic texture handles (tex_dyn_slots neutral): its %d-entry array reads the neutral %s", sh->key, nvn_stage,
+                b->n, b->dtt == (uint8_t)MTLTextureTypeTextureBuffer ? "buffer texture" : "texture"); }
+        } else if (b->kind == NVN_RB_SAMPD && DM_GAME_TEX_DYN_NEUTRAL) {   // its samplers: the neutral sampler (its comparisons pass)
+            for (int k = 0; k < b->n; k++) slots[aid + k] = neutral_samp_rid();
+            USE(neutral_samp(), MTLResourceUsageRead);
         } else if (b->kind == NVN_RB_TEXD) {   // dynamic handle array (profile key tex_dyn_slots): element k = the texture in slot k (combined, else separate), since c2 holds slot indices for this shader (see DRV2 below)
             uint64_t real = 0;   // the elements that got a texture of the declared kind (logged on the shader's first encode: logged bit 0)
             for (int k = 0; k < b->n; k++) {
@@ -6371,7 +6405,7 @@ static int encode_args_(id<MTLCommandEncoder> en, NvShader *sh, int nvn_stage, i
                     // A shader with dynamic handle arrays (TEXD / SAMPD, profile key tex_dyn_slots) picks a table slot at run time and ORs a texture word with a sampler word into a handle,
                     // whose texture / sampler IDs index the arrays. For it the tables hold slot indices instead of handles (texture slot r → r, and r << 20 when a combined handle carries
                     // a sampler; sampler slot r → r << 20), and the arrays hold the bound slots, so the shader's own arithmetic picks the binding (Octopath Traveler 0: separate texture slots 0-10, samplers 0-4)
-                    const uint64_t *tx = S.tex[nvn_stage], *im = S.img[nvn_stage]; int dyn = sh->rf.dyn;
+                    const uint64_t *tx = S.tex[nvn_stage], *im = S.img[nvn_stage]; int dyn = sh->rf.dyn && DM_GAME_TEX_DYN_SLOTS;   // tex_dyn_slots neutral: c2 keeps the handles
                     for (int r = 0; r < C2_IMG_SLOTS; r++) { uint32_t ih = (uint32_t)im[r]; memcpy(d + C2_IMG + 8 * r, &ih, 4); }
                     for (int r = 0; r < C2_TEX_SLOTS; r++) {   // a combined slot past 31 is written when it is bound and the image slot it shares is not (Hades II binds texture slot 34, no image)
                         if (r >= 32 && (!tx[r] || (r - 32 < C2_IMG_SLOTS && im[r - 32]))) continue;
