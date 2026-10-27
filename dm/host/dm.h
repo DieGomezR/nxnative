@@ -27,7 +27,7 @@ static inline int dm_host_thread_join(pthread_t thread, void **result) {
     return r;
 }
 
-#define MAX_MOD 128   // the profile's modules (up to 8) and the NROs a game loads at run time (Super Smash Bros. Ultimate: 98)
+#define MAX_MOD 160   // the profile's modules (up to 8) and the NROs a game loads at run time (Super Smash Bros. Ultimate: 98; Mario Party Superstars: 126, its boards and minigames)
 #define LOG(...) do { fprintf(stderr, "[dm] " __VA_ARGS__); fputc('\n', stderr); } while (0)
 #define die(...) do { LOG("FATAL " __VA_ARGS__); abort(); } while (0)
 
