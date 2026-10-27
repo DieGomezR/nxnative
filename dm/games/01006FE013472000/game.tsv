@@ -1,0 +1,45 @@
+# Game profile of Mario Party Superstars (Switch, update 1.1.1 = v131072). Plays on the Mac: a board and a minigame
+# Format: see dm/games/README.md
+# NintendoWare Bezel Engine, SDK 11.4.3: RomFS is 477 Bezel Engine archives (.bea) beside 209 .bfstm streams; the shaders are BNSH, 80,783 in Archive/, 1,936 in the engine's System.nx.bea
+# and 71 in main (82,790: 52,241 pixel, 30,514 vertex, 23 compute, 12 geometry). The boards, minigames and menus
+# are 126 NROs (nro/NX_Release/hsbd*, hsmg*, hsmn*, registered by .nrr/hs.nrr), loaded with ro::LoadModule
+
+# ---- Identity ----
+title_id	01006FE013472000
+program_id	01006FE013472000
+
+# ---- App ----
+# Game name: only a label for profile listings and the Mac window title; the iOS app name is the game name in the base NSP, and the bundle ID comes from the base game title ID (build_ipa.sh / NSP script)
+name	Mario Party Superstars
+ipa	MarioPartySuperstars.ipa
+app_category	public.app-category.games
+
+# ---- Versions ----
+build	v131072	1.1.1	main=2841e26d7fb8aa1783afd4b6c116d4f9	subsdk0=4dd097b435891c5e0e15a65dbe47124f	subsdk1=507f19d1240d09d00992248e8a0fd77e	sdk=2d369d9999e3e10e665106f840ffff9b
+package	v131072
+shader_versions	v131072
+
+# ---- Files ----
+# load order as on Horizon: main, subsdk*, sdk (subsdk0 = GLSLC, subsdk1 = NintendoSDK_movie)
+modules	main subsdk0 subsdk1 sdk
+romfs_marker	Archive/Resident.nx.bea
+zip_store	.bea:.bfstm:.metallib
+
+# ---- Memory ----
+# The NPDM declares no system resource, so IsVirtualAddressMemoryEnabled is false and main sets a heap of the pool − 64 MB (3.14 GB in a 3.25 GB heap region; about 2.3 GB resident on a board)
+sys_resource	0x0
+mem_reserve	0x100000000
+mem_alias	0x10000000
+mem_stack	0x10000000
+app_pool	0xCD500000
+
+# ---- Graphics ----
+# the game sets the near = 0 depth mode (nvnDeviceSetDepthMode): the pipeline bases made before it runs take the main0_z vertex entries
+depth_mode	zero
+# the materials' clustered lights keep their shadow maps' and projected textures' handles in a storage buffer, past the translator's fallback arrays: those 6,370 shaders load
+# with neutral textures, so the lights draw without shadows or projected textures (nvn_mtl.m white_tex; docs/reference/shaders.md, Texture handles from the game's own data)
+tex_dyn_slots	neutral
+
+# ---- Shader split ----
+shader_groups	/Archive/=archive /stream/=stream /nro/=nro /.nrr/=nrr
+shader_note	Mario Party Superstars shaders
